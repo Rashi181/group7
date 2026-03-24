@@ -307,15 +307,146 @@ std::vector<uint32_t> Graph::get_random_ordering() const {
     return ordering;
 }
 
+// Returns true if all neighbors of v form a clique (no fill needed to eliminate v)
+bool Graph::is_simplicial(uint32_t v) const {
+    const auto neighbors = get_neighbors(v);
+    for (size_t i = 0; i < neighbors.size(); i++) {
+        for (size_t j = i + 1; j < neighbors.size(); j++) {
+            if (!edge_exists(neighbors[i], neighbors[j]) &&
+                !edge_exists(neighbors[j], neighbors[i])) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// Returns true if at most one pair of neighbors is not connected (fill <= 1)
+bool Graph::is_almost_simplicial(uint32_t v) const {
+    const auto neighbors = get_neighbors(v);
+    int missing = 0;
+    for (size_t i = 0; i < neighbors.size(); i++) {
+        for (size_t j = i + 1; j < neighbors.size(); j++) {
+            if (!edge_exists(neighbors[i], neighbors[j]) &&
+                !edge_exists(neighbors[j], neighbors[i])) {
+                missing++;
+                if (missing > 1) return false;
+            }
+        }
+    }
+    return true;
+}
+
+// Simplified elimination: removes vertex, cliques up neighbors, no bucket update
+// Used during data reduction phase (before buckets are initialized)
+void Graph::eliminate_vertex_simple(uint32_t v, std::vector<uint32_t>& ordering) {
+    const auto neighbors = get_neighbors(v);
+
+    // Add fill edges between neighbors
+    for (size_t i = 0; i < neighbors.size(); i++) {
+        for (size_t j = i + 1; j < neighbors.size(); j++) {
+            uint32_t u = neighbors[i], w = neighbors[j];
+            if (!edge_exists(u, w)) {
+                uint32_t weight = get_edge_weight(u, v) + get_edge_weight(v, w);
+                adj[u].push_back({w, weight});
+                adj[w].push_back({u, weight});
+                add_edge_cache(u, w);
+                add_edge_cache(w, u);
+            }
+        }
+    }
+
+    // Record the bag
+    td_bag_edges[v].push_back({v, 0});
+    for (auto nb : neighbors) {
+        td_bag_edges[v].push_back({nb, get_edge_weight(nb, v)});
+    }
+
+    // Remove v from all neighbor adjacency lists and edge cache
+    for (auto nb : neighbors) {
+        remove_edge_cache(nb, v);
+        remove_edge_cache(v, nb);
+        adj[nb].erase(
+            std::ranges::find_if(adj[nb], [&](const Edge& e){ return e.to == v; })
+        );
+    }
+    adj.erase(v);
+    num_vertices--;
+
+    ordering.push_back(v);
+}
+
+// Apply data reduction rules exhaustively before running min-fill.
+// Returns the partial ordering of eliminated vertices.
+std::vector<uint32_t> Graph::apply_data_reduction() {
+    std::vector<uint32_t> ordering;
+    bool changed = true;
+
+    while (changed) {
+        changed = false;
+
+        for (auto it = adj.begin(); it != adj.end(); ) {
+            uint32_t v = it->first;
+            ++it; // advance before potential erase
+
+            uint32_t deg = adj.count(v) ? adj.at(v).size() : 0;
+
+            // Rule 1: degree-0 (isolated vertex)
+            if (deg == 0) {
+                adj.erase(v);
+                num_vertices--;
+                ordering.push_back(v);
+                td_bag_edges[v].push_back({v, 0});
+                changed = true;
+                continue;
+            }
+
+            // Rule 2: degree-1 (pendant vertex — no fill needed)
+            if (deg == 1) {
+                eliminate_vertex_simple(v, ordering);
+                changed = true;
+                continue;
+            }
+
+            // Rule 3: simplicial vertex (neighbors already a clique — zero fill)
+            if (is_simplicial(v)) {
+                eliminate_vertex_simple(v, ordering);
+                changed = true;
+                continue;
+            }
+
+            // Rule 4: almost-simplicial with degree <= 4 (at most 1 fill edge)
+            if (deg <= 4 && is_almost_simplicial(v)) {
+                eliminate_vertex_simple(v, ordering);
+                changed = true;
+                continue;
+            }
+        }
+    }
+
+    return ordering;
+}
+
 std::tuple<Graph::TreeDecompAdj, Graph::TreeDecompBags, uint32_t> Graph::get_td() {
-    Graph h = Graph(adj, true);
+    Graph h = Graph(adj, false); // no buckets yet — data reduction runs first
 
     const auto adj_size = adj.size();
-
     h.num_vertices = adj_size;
-    // h.populate_buckets();
-    h.populate_buckets_min_fill();
     h.td_bag_edges.resize(adj_size);
+
+    // Phase 1: Data reduction — eliminates simplicial/degree-1/almost-simplicial vertices
+    // before min-fill runs, reducing graph size and improving ordering quality
+    std::cout << "Applying data reduction..." << std::endl;
+    std::vector<uint32_t> reduced_ordering = h.apply_data_reduction();
+    std::cout << "  Reduced " << reduced_ordering.size() << " vertices, "
+              << h.adj.size() << " remaining for min-fill." << std::endl;
+
+    // Phase 2: Initialize buckets and run min-fill on the reduced graph
+    h.buckets.resize(10000);
+    h.heuristic_vals.resize(adj_size);
+    h.bucket_position.resize(adj_size);
+    // h.populate_buckets();      // swap comment to switch to min-degree
+    h.populate_buckets_min_fill();
 
     std::vector<uint32_t> ordering(adj_size);
     parent_map.resize(adj_size);
@@ -329,16 +460,30 @@ std::tuple<Graph::TreeDecompAdj, Graph::TreeDecompBags, uint32_t> Graph::get_td(
     td_adj.resize(adj_size);
     td_bags.resize(adj_size);
 
-    for (size_t i = 0; i < adj.size(); i++) {
+    // Assign ordering positions: reduced vertices come first (they have zero/near-zero fill)
+    size_t order_idx = 0;
+    for (uint32_t v : reduced_ordering) {
+        td_bags[v] = h.td_bag_edges[v].empty()
+            ? std::vector<uint32_t>{v}
+            : [&]() {
+                std::vector<uint32_t> bag;
+                for (auto& e : h.td_bag_edges[v]) bag.push_back(e.to);
+                return bag;
+              }();
+        ordering[v] = order_idx++;
+    }
+
+    while (!h.adj.empty()) {
         uint32_t v = h.pop_next_vertex();
 
         td_bags[v] = h.get_star(v);
         h.eliminate_vertex(v, true);
 
-        ordering[v] = i;
+        ordering[v] = order_idx++;
 
-        if (i % static_cast<int>(num_vertices / 10) == 0) {
-            std::cout << "Eliminated vertex " << i << " " << 10 * i / static_cast<int>(num_vertices / 10) << "%" << std::endl;
+        if (order_idx % static_cast<int>(adj_size / 10 + 1) == 0) {
+            std::cout << "Eliminated vertex " << order_idx << " "
+                      << 100 * order_idx / adj_size << "%" << std::endl;
         }
     }
 
