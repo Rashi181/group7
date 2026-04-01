@@ -1,7 +1,7 @@
 //
 // Created by Patrick Martin on 12/12/25.
 //
-
+ 
 #ifndef GROUP7_GRAPH_H
 #define GROUP7_GRAPH_H
 #include <list>
@@ -9,49 +9,49 @@
 #include <unordered_set>
 #include <memory>
 #include <vector>
-
+ 
 #include "Edge.h"
-
+ 
 class Graph {
-
+ 
 public:
-
+ 
     using AdjMap = std::unordered_map<uint32_t, std::vector<Edge>>;
-
+ 
     using TreeDecompAdj = std::vector<std::vector<uint32_t>>; // matrix of edges in TD. key denotes bag root v, edge to bag root u
     using TreeDecompBags = TreeDecompAdj; // key: bag root v, value: all vertices in X(v) but without weights
-
+ 
     using Pos = std::vector<std::vector<uint32_t>>;
     using Dis = std::vector<std::vector<uint32_t>>;
-
+ 
     using TreeDecompBagEdges = std::vector<std::vector<Edge>>;
     using TreeDecompWeights = std::vector<std::vector<uint32_t>>;
-
+ 
     Graph() = default;
-
+ 
     explicit Graph(AdjMap adj, bool populate_buckets);
-
+ 
     static Graph from_mtx(const std::string &path, bool weighted=false, bool directed=false);
-
+ 
     [[nodiscard]] std::vector<uint32_t> bfs_traversal(uint32_t start);
     uint32_t get_num_vertices() const {
         return max_vertex_id + 1;
     }
-
+ 
     uint32_t get_num_edges() const {
         return num_edges;
     }
-
+ 
     double get_avg_degree() const {
         if (num_vertices == 0) return 0.0;
         return (2.0 * num_edges) / num_vertices;
     }
-
-    enum class Heuristic { MIN_DEGREE, MIN_FILL, LEX_BFS, HYBRID };
-
+ 
+    enum class Heuristic { MIN_DEGREE, MIN_FILL, MIN_FILL_REDUCTION, LEX_BFS, HYBRID };
+ 
     // returns adj, bags, root of tree decomposition
     std::tuple<TreeDecompAdj, TreeDecompBags, uint32_t> get_td(Heuristic h = Heuristic::MIN_FILL, float alpha = 0.5f);
-
+ 
     std::tuple<Pos, Dis> get_h2h();
     [[nodiscard]] std::vector<uint32_t> get_top_down_ordering() const;
     [[nodiscard]] std::vector<uint32_t> get_bag_path(uint32_t v) const;
@@ -59,27 +59,38 @@ public:
     uint32_t get_h2h_size();
     size_t get_treeheight();
     size_t get_treeheight_r(uint32_t root, uint32_t pred, size_t depth);
-
+ 
     void populate_buckets();
     void populate_buckets_min_fill();
     void populate_buckets_hybrid(float alpha);
     void clear_buckets();
     uint32_t get_fill(uint32_t u);
-
+ 
     [[nodiscard]] bool edge_exists(uint32_t u, uint32_t v) const;
     [[nodiscard]] uint32_t pop_next_vertex();
     [[nodiscard]] std::vector<uint32_t> get_star(uint32_t vertex) const;
     void eliminate_vertex(uint32_t v, bool is_min_degree);
     static uint32_t treewidth(TreeDecompBags& bags);
-
+ 
     [[nodiscard]] std::vector<uint32_t> get_neighbors(uint32_t vertex) const;
     [[nodiscard]] uint32_t get_edge_weight(uint32_t u, uint32_t v) const;
-
+ 
     void add_edge_cache(uint32_t u, uint32_t v, uint32_t w = 1);
     void remove_edge_cache(uint32_t u, uint32_t v);
-
+ 
+    // Helpers used by DataReduction
+    bool     dr_has_vertex(uint32_t v)  const { return adj.count(v) > 0; }
+    uint32_t dr_degree(uint32_t v)      const { return adj.count(v) ? adj.at(v).size() : 0; }
+    AdjMap::iterator dr_adj_begin()           { return adj.begin(); }
+    AdjMap::iterator dr_adj_end()             { return adj.end(); }
+    void dr_add_neighbor(uint32_t u, uint32_t w, uint32_t weight);
+    void dr_record_bag(uint32_t v, const std::vector<uint32_t>& neighbors);
+    void dr_remove_vertex(uint32_t v, const std::vector<uint32_t>& neighbors);
+    void dr_remove_isolated(uint32_t v, std::vector<uint32_t>& ordering);
+    void populate_buckets_min_fill_no_edge_init();
+ 
     [[nodiscard]] std::vector<uint32_t> get_random_ordering() const;
-
+ 
     // Lexicographic BFS: returns vertices in LexBFS visit order.
     // Produces better elimination orderings than MCS on non-chordal graphs.
     [[nodiscard]] std::vector<uint32_t> lex_bfs() const;
@@ -93,38 +104,38 @@ public:
     float norm_max_fill = 1.0f;
     uint32_t min_bucket_hint = 0;
     bool weighted_graph = false;  // if false, weight_map is skipped to save memory
-
+ 
 private:
     AdjMap adj{};
     
     TreeDecompAdj td_adj;
     TreeDecompBags td_bags;
-
+ 
     TreeDecompBagEdges td_bag_edges;
     TreeDecompWeights td_weights;
-
+ 
     std::vector<uint32_t> parent_map;
-
+ 
     uint32_t td_root = 1e9;
     size_t treeheight = 0;
-
+ 
     float avg_degree = 0.0f;
     std::vector<std::vector<uint32_t>> vertex_betweenness;
-
+ 
     std::tuple<Pos, Dis> h2h;
-
+ 
     std::unordered_set<uint64_t> edge_set;
     std::unordered_map<uint64_t, uint32_t> weight_map;
-
+ 
     std::vector<std::list<uint32_t>> buckets;
     std::vector<uint32_t> heuristic_vals;
     std::vector<std::list<uint32_t>::iterator> bucket_position;
     std::vector<uint32_t> fill_count; // incremental fill count per vertex for hybrid
-
+ 
     static uint32_t index_of(const std::vector<uint32_t>&, uint32_t v);
-
+ 
     uint32_t lca(uint32_t u, uint32_t v);
     void update_bucket(uint32_t u, uint32_t heuristic_val);
 };
-
+ 
 #endif //GROUP7_GRAPH_H
