@@ -933,3 +933,4 @@ uint32_t Graph::treewidth(TreeDecompBags& bags) {
  
 size_t Graph::get_treeheight() {
     return treeheight;
+}

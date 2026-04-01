@@ -1,5 +1,4 @@
 
-Copy
 
 //
 // DataReduction.cpp
